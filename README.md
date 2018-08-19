@@ -18,6 +18,12 @@ I downloaded the information related to cyclists and I filtered only for the Wes
 
 ### Get the analysis
 
-The cyclists' casualties follow a Poisson distribution
+The statistical analysis shows two different approaches to the story. Both are based on the Poisson distribution, both use methods to avoid extreme values, and both calculate the confidence interval for each local authority's rate. 
 
-To find and understand the statistical model needed I counted on [Carlos Gil Bellosta's](https://www.datanalytics.com/) help. 
+One of the model uses a <strong>generalised linear mixed model</strong> to estimate the annual average casualties rate by local authority. The second one estimates such rate with <strong>stan, a probabilistic programming language for Bayesian statistical inference</strong>. This last one considers the historical mean of the cyclists' casualties to estimate the rate.
+
+[Here is the code used in R](https://github.com/Carmen-Aguilar/cyclists-probability/blob/master/poisson_distribution.Rmd).
+
+And here is the [rendered R Notebook](http://rpubs.com/Carmen_Aguilar/probability-poisson) where I have written a step by step of the two models which have been developed thanks to [Carlos Gil Bellosta's](https://www.datanalytics.com/) help. 
+
+I have also included a conclussion about why this two models aggregate value to the journalistic story, instead of using a more basic and more common method among journalists. 
