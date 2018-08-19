@@ -1,0 +1,283 @@
+---
+title: "Dangerous towns for cyclists or probability in a journalistic story"
+output:
+  html_document:
+    df_print: paged
+---
+
+As part of my final project of the MA in Data Journalism at Birmingham City University, I have been exploring the use of probability and probability distributions in media stories (More about it <a href="https://medium.com/@carmen.aguilar.garcia/statistics-for-journalists-a-list-of-descriptive-methods-and-a-brief-outline-of-inferential-and-3c93612d7e1d" target="_blank">at the end of this article</a>). That is how I came up with the idea of using Poisson distribution for a story about the most dangerous cities for cyclists or the probability of having an accident in each area. 
+
+I contacted to <strong>Carlos Gil Bellosta</strong> (here is his <a href="https://www.datanalytics.com/" target="_blank">blog</a>) to make sure I was on the right direction. Then, I looked for the data I needed <a href="https://www.gov.uk/government/statistics/reported-road-casualties-great-britain-annual-report-2016" target="_blank">here</a>. 
+
+As the purpose was learning how to use this model for a journalistic story, I took only the 15 areas from the West Midlands. I also looked for the population size for each local authority selected. 
+
+# Importing data
+
+```{r}
+casualties_wm <- read.csv("casualties_cyclist.csv", sep = ";")
+casualties_wm$All_casualties_16 <- as.numeric(gsub(",", "",casualties_wm$All_casualties_16))
+class(casualties_wm$All_casualties_16)
+```
+
+# Finding the model
+
+Two of the primary examples when statisticians explain Poisson is the cancer deaths and the car accidents. So, casualties by bike was quite reasonable to suit this model (they are independent events, unlimited events, occur randomly, in a time interval, and the average remains the same from interval to interval).
+
+What I haven't taken into account was the <strong>"multiple comparison 'problem'"</strong> mentioned in <a href="http://www.stat.columbia.edu/~gelman/research/published/multiple2f.pdf" target="_blank">this paper</a> that Carlos sent it to me. 
+
+One of the examples was quite similar to my idea, but the paper does not give much detail about the code used (no, it wasn't written for journalists). So, after a couple of attempts, I wrote again to Carlos asking for help, and he got back to me with two models to tell my story.
+
+### Generalised linear mixed models
+
+```{r}
+library(lme4)
+library(lattice)
+library(effects)
+library(ggplot2)
+```
+
+
+```{r}
+glmer(All_casualties_16 ~ (1|Local_Authority) + offset(log(Pop_16)), family = poisson, data = casualties_wm)
+```
+
+"Generalized linear mixed model fit by maximum likelihood," <strong>what is this?</strong>
+
+A Generalised Linear Model (GLM) is part of the regression models where the response variable (cyclists' casualties) does not follow a normal distribution, but an exponential family distribution (Poisson, in my case).
+
+A "Generalized linear mixed model" <strong>takes into account the random effects of the predictors</strong> (the local authorities).
+
+The function is similar to the regression one <a href="http://rpubs.com/Carmen_Aguilar/regression-analysis" target="_blank">that I had previously explored</a>.
+
+"All_casualties_16" is my dependent variable. So, the next argument is the independent. But, why the number 1 in (1|Local_Authority)?
+
+"The number 1 is the independent variable," explained Carlos by mail, "so, (1|x) means that there are variations in the independent variable which depends on 'x'. In other words, for each x there is a deviation regarding the mean," he added.  
+
+The glmer function also <strong>does 'pooling' of those deviations to avoid extreme values</strong> and to get more stable estimate figures.
+
+The next argument is 'offset', which "is used for a covariate with *known* slope", explained Mervyn Thomas <a href="https://www.researchgate.net/post/What_is_the_role_of_an_offset_term_in_modelling_a_GLM" target="_blank">in this online question</a>. "This might arise in situations where <strong>you are correcting the number of events for an estimate of population size."</strong>
+
+The family argument refers to the 'type' of distribution. And, lastly, our dataset. 
+
+```{r}
+modelo <- glmer(All_casualties_16 ~ (1|Local_Authority) + offset(log(Pop_16)), family = poisson, data = casualties_wm)
+```
+
+The model estimates the average casualties across all the LA. And we can access the estimated deviation of each LA regarding the overall mean with ranef(). That gives the y-intercept by each local authority (the y value -number of casualties-, when x=0 -local authority-). This value will be needed later.  
+
+```{r}
+ranef(modelo)
+```
+
+
+```{r}
+randoms <- ranef(modelo, condVar = TRUE)$Local_Authority
+variances <- as.numeric(attr(randoms, "postVar")) #We'll use the variances for estimating the confidence intervals. 
+```
+
+Then, he creates the new dataset with the <strong>estimated mean casualties in each local authority</strong> (the variation of each local authority + the average of casualties across all local authorities).    
+
+```{r}
+res <- data.frame(local_authority = rownames(randoms), mean_effect = randoms$`(Intercept)`+coef(summary(modelo))[,"Estimate"])
+```
+
+```{r}
+coef(summary(modelo))
+```
+
+After that, he adds the upper and lower limit of the variation of casualties per local authority.  
+
+```{r}
+res$lower <- res$mean_effect - 2* sqrt(variances) # 2 standard deviation
+res$upper <- res$mean_effect + 2* sqrt(variances)
+```
+
+The casualties have an exponential distribution (Poisson is part of the exponential regression family).
+
+```{r}
+exp(res$mean_effect)
+```
+
+
+```{r}
+res$mean_effect <- exp(res$mean_effect)*1e6 # Per million inhabitants. 
+res$lower <- exp(res$lower)*1e6
+res$upper <- exp(res$upper)*1e6
+```
+
+```{r}
+res$local_authority <- reorder(res$local_authority, res$mean_effect, mean)
+```
+
+
+```{r}
+ggplot(data = res, aes(x=local_authority, y=mean_effect)) + geom_point() + geom_errorbar(width=.1, aes(ymin=lower, ymax=upper), col="blue") + labs(title="Dangerous cities for cyclists in the West Midlands", y="Casualties per million", x=NULL, caption="Source: Department of Transport") + theme(axis.text.x = element_text(angle = 20))
+```
+
+
+### Model with stan 
+
+For the second model, he uses Stan, which is a probabilistic programming language for Bayesian statistical inference.
+
+Worth digging a bit into Bayesian inference to understand the basic concepts of prior and posterior probability. I will translate the example Carlos gave me. 
+
+"You are thinking of buying a mobile phone with some specific characteristics, but you don't know how much it would cost. You estimate that it could cost between 100 and 800 euros, what is the same that saying that you don't have a clue. So, that is your prior belief.
+
+Then, you do some research. Somebody bought a new phone for X euros, a friend saw another one similar in China for X euros and so on. Your estimation narrows down up to 250 and 350 euros. That is what you "learn" after the data. You don't have the exact value, but your new estimation is better. The more the data, the more accurate your (posterior) estimation is."
+
+And that is what stan does. 
+
+```{r}
+library(rstan)
+```
+
+
+![Initial code](/Users/carmenaguilargarcia/Documents/MA_Data_Journalism/MA project/Stats/methods/poisson_distribution/code.png)
+
+
+Firstly, setting the method. Data and parameter are the elements which will be used in the model, which is established at the bottom.
+
+The loop says that the number of <strong>casualties in each local authority follows a Poisson distribution, and what we need to calculate is the rate.</strong>
+
+ for (i in 1:n)
+    casualties[i] ~ poisson(rate[i] * pop[i] / 1e6);
+
+However, <strong>this rate has to be relatively similar to the historical one</strong>. The function normal() takes the mean and standard deviation of the historical information in the dataset: the average in the casualties over 2010 and 2014.
+
+ rate ~ normal(my_mean, my_sd)
+
+```{r}
+#preparing the data
+#number of casualties, population, average of the last years - explanatory variables
+stan_data <- list(n=nrow(casualties_wm), casualties= casualties_wm$All_casualties_16, pop=casualties_wm$Pop_16, my_mean=mean(casualties_wm$average_million), my_sd= sd(casualties_wm$average_million))
+```
+
+Time to use the function stan(). This function estimates the value that we don't know (the rate) given the data that we have.  
+
+```{r}
+fit <- stan(file = "src.stan", data = stan_data, chains = 1, iter = 12000, warmup = 2000, thin = 10)
+```
+
+The arguments mean:
+
+File: that is the document where we have established the method before. 
+
+Data: the list with the explanatory variables.
+
+Chains: I looked for this up... Markov chain is a number of sequences of possible events which follows the Markov theory. And the Markov theory says that the probability of something happening depends only on the previous event. 
+
+Iter: number of iterations for each chain.
+
+Warmup: I couldn't find what is the purpose of this argument, and Carlos explained to me that this argument is used to "ignore the first values, which tend to be noisy and inconsistent." That makes sense even with a basic knowledge in statistics, given other theories such as the law of big numbers, or the random variation due to small populations.
+
+Thin: save one in every n. 
+
+
+```{r}
+summary(fit)
+```
+
+
+Storing the rates and the CI for the chart:
+
+```{r}
+res2 <- as.data.frame(summary(fit)$summary[1:nrow(casualties_wm), c("mean", "2.5%", "97.5%")])
+res2$local_authority <- casualties_wm$Local_Authority
+res2$local_authority <- reorder(res2$local_authority, res2$mean, mean)
+colnames(res2) <- c("mean", "lower", "upper", "local_authority")
+```
+
+```{r}
+ggplot(res2, aes(x=local_authority, y = mean)) +
+  geom_point(alpha=0.5) +
+  geom_errorbar(width=.1, aes(ymin=lower, ymax=upper), colour="blue") + 
+  labs(x=NULL, y= "Casualties (per million)", title="The most dangerous areas for cyclists in the West Midlands",
+       caption="Source: Department of Transport") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+# Interpreting the results
+
+Blue lines show the uncertainty. In 19 out of 20 times the number of casualties/million will be between the upper and lower limit. Some lines are bigger than others due to the population size. The smaller the population, the higher the variation in the estimated mean. 
+
+The dots are the values estimated by the model (the mean), which is similar but not equal to the real rates, because of the <strong>regularization</strong> (new word and technique for my list). 
+
+"The regularization is one of the main processes in the modern statistics, and it is related to the 'incredulity' of the extreme values," Carlos told me. So, this process 'punish' those extreme values toward the mean. 
+
+
+# Conclusion
+
+Let's remember the purpose of all of this. 
+
+The story-idea: the most dangerous cities for cyclists. 
+
+If I had told this story three months ago, I would have done:
+
+```{r}
+ggplot(data=casualties_wm, aes(x=reorder(Local_Authority, casualties_16_million), y=casualties_16_million)) + geom_bar(stat = "identity") + labs(title="The worst towns per cyclists in the West Midlands", y="Casualties per million", x=NULL, caption="Source: Department of Transport") + theme(axis.text.x = element_text(angle = 20))
+```
+
+I mean, I would have considered only the last rate of 2016, a single and 'precise' value. 
+
+But, <strong>what if that year was an outlier? What about the uncertainty/variability in the rate? And, what about talking about risks as the probability of having a casualty given the information we have from the past?</strong>
+
+"Scientists deal with uncertainty by invoking probability," wrote Victor Cohn in the magazine Significance. And he adds "to be statistically significant, and not just the result of pure chance, the same result must appear again and again. When it does, that's reliability."
+
+In several papers, David Spiegelhalter has suggested using funnel plots to control the indicator against a measure of its precision, and to avoid the "spurious ranking" in caterpillar plots.
+
+```{r}
+asfunnelplot  <- data.frame(LA=casualties_wm$Local_Authority,
+                       casualties=(casualties_wm$casualties_16_million/1000000),
+                       population=casualties_wm$Pop_16
+                       )
+asfunnelplot$SE <- sqrt((asfunnelplot$casualties*(1-asfunnelplot$casualties))/asfunnelplot$population)
+  
+casualties.fem <- weighted.mean(asfunnelplot$casualties, 1/asfunnelplot$SE^2)
+
+## lower and upper limits for 95% and 99.9% CI, based on FEM estimator
+pop.seq <- seq(10000, max(asfunnelplot$population), 10000)
+ll95 <-casualties.fem - 1.96 * sqrt((casualties.fem*(1-casualties.fem)) / (pop.seq)) 
+ul95 <- casualties.fem + 1.96 * sqrt((casualties.fem*(1-casualties.fem)) / (pop.seq)) 
+ll999 <- casualties.fem - 3.29 * sqrt((casualties.fem*(1-casualties.fem)) / (pop.seq))
+ul999 <- casualties.fem + 3.29 * sqrt((casualties.fem*(1-casualties.fem)) / (pop.seq))
+CI <- data.frame(ll95, ul95, ll999, ul999, pop.seq, casualties.fem)
+
+## draw plot
+funnel <- ggplot(aes(x = population, y = casualties), data = asfunnelplot) +
+    geom_point(shape = 1, size = 2) +
+    geom_line(aes(x = pop.seq, y = ll95, color = "steelblue3"), data = CI, color = "steelblue3") +
+    geom_line(aes(x = pop.seq, y = ul95, color = "steelblue3"), data = CI, color = "steelblue3")+
+    geom_line(aes(x = pop.seq, y = ll999, color = "steelblue1"), linetype = "dashed", data = CI, color = "steelblue1") +
+    geom_line(aes(x = pop.seq, y = ul999, color = "steelblue1"), linetype = "dashed", data = CI, color = "steelblue1") + geom_hline(aes(yintercept = casualties.fem, color = "olivedrab"), data = CI, color = "olivedrab") + xlim(0,1150000) + scale_y_continuous(labels = function(y) y*100000) + labs(title = "", x = "Local authority population size", y = "") + theme_bw() 
+funnel
+```
+
+But <strong>funnel plots make difficult the multiple comparisons, and it doesn't avoid the problem of extreme values.</strong>
+
+"There is no formal allowance for ‘regression to the mean’, in which extreme outcomes are expected to tend towards the population mean simply because a contributing factor to their ‘extremeness’ is likely to be a run of good or bad luck. This could be formally taken into account by  fitting a random-effects model," Spiegelhalter says in "Funnel plots for comparing institutional performance."
+
+Hence, for my story, I would use the <strong>random effects models</strong> of above, which estimate the casualties rate considering the probability distribution of this type of events, which use mechanisms to avoid extreme values, and which calculate and show the variation of each estimated mean (uncertainty).
+
+Between the two models developed, I would lean towards the one with stan, because it takes into account the historical average and relates it to the new estimated rate of each local authority. 
+
+# Bibliography:
+
+Cohn. V, (1999) How to help reporters tell the truth, Of significance, Oct 22nd, pp.9-13. Available at: http://www.statlit.org/pdf/1999-Cohn-Significance.pdf [Accessed August 14]
+
+Department of Statistics Online Programs of the Pennsylvania State University (n.d.) Introduction to Generalized Linear Models, STAT 504. Available at: https://onlinecourses.science.psu.edu/stat504/node/216/ [Accessed August 14]
+
+Gelman A., Hill, J. and Yajima, M. (2012) Why we (usually) don’t have to worry about multiple comparisons, Journal of Research on Educational Effectiveness, Vol.5, pp: 189–211, DOI: 10.1080/19345747.2011.618213. [Accessed at Agust 15]
+
+Hertzog, L. (2017) Interpreting random effects in linear mixed-effect models, Biologyforfun [blog], April 3rd. Available at: https://biologyforfun.wordpress.com/2017/04/03/interpreting-random-effects-in-linear-mixed-effect-models/ [Accessed August 14]
+
+Iosif Moraru, R. (2014) How to assess risk: as a measure of probability or possibility? Researchgate (n.d.). Available at: https://www.researchgate.net/post/How_to_assess_risk_as_a_measure_of_probability_or_possibility [Accessed August 14]
+
+Mervyn, T. (2013) What is the role of an offset term in modelling a GLM?, Researchgate (n.d.). Available at: https://www.researchgate.net/post/What_is_the_role_of_an_offset_term_in_modelling_a_GLM [Accessed August 14]
+
+NSS (2016) Bayesian Statistics explained to Beginners in Simple English, Analytica Vidhya, Jun 20. Available at: https://www.analyticsvidhya.com/blog/2016/06/bayesian-statistics-beginners-simple-english/ [Accessed August 14]
+
+Spiegelhalter, D. (2005) Handling over-dispersion of performance indicators, BMJ Quality & Safety Vol 14, pp.347-351. Available at: http://dx.doi.org/10.1136/qshc.2005.013755 [Accessed August 14]
+
+Spiegelhalter, D. (2005) Funnel plots for comparing institutional performance, Statistics in medicine, Vol 24, pp. 1185-1202.
+
+StatsToDo (n.d.) Poisson Distribution : Explained, StatsToDo. Available at: https://www.statstodo.com/Poisson_Exp.php [Accessed August 14]
